@@ -8,8 +8,12 @@ struct BotOnlineHandler;
 
 #[async_trait]
 impl serenity::EventHandler for BotOnlineHandler {
-    async fn ready(&self, _: serenity::Context, ready: serenity::Ready) {
+    async fn ready(&self, ctx: serenity::Context, ready: serenity::Ready) {
         println!("✅  {} is online!", ready.user.name);
+
+        if let Err(e) = commands::reschedule_messages(ctx).await {
+            eprintln!("Failed to reschedule messages: {:?}", e);
+        }
     }
 }
 
