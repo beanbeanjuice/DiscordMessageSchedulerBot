@@ -1,6 +1,6 @@
 FROM rust:slim AS builder
 
-WORKDIR /app/bot
+WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 
@@ -9,8 +9,8 @@ RUN ls -la ./release/
 
 FROM debian:bookworm-slim
 
-WORKDIR /app/bot
-COPY --from=builder /app/bot/release/discord_message_scheduler_bot ./bot
+WORKDIR /app
+COPY --from=builder /app/release/discord_message_scheduler_bot ./bot
 
 RUN chmod +x ./bot
 
