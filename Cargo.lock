@@ -384,6 +384,7 @@ dependencies = [
  "chrono",
  "csv",
  "dotenv",
+ "glob",
  "parse_duration",
  "poise",
  "serde",
