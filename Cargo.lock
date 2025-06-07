@@ -379,11 +379,12 @@ dependencies = [
 
 [[package]]
 name = "discord_message_scheduler_bot"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "csv",
  "dotenv",
+ "glob",
  "parse_duration",
  "poise",
  "serde",

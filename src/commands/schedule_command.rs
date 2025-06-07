@@ -1,9 +1,14 @@
 use crate::lib::{Context, Error};
-use poise::{serenity_prelude as serenity};
-use serenity::all::{CreateMessage, Mentionable};
-use serde::{Serialize, Deserialize};
+use glob::glob;
+use poise::serenity_prelude as serenity;
+use serde::{Deserialize, Serialize};
+use serenity::all::{Attachment, CreateAttachment, CreateMessage, Mentionable};
+use std::io::Write;
+use std::path::PathBuf;
 
-const FILE_NAME: &str = "./data/scheduled_messages.csv";
+const DIRECTORY: &str = "./data";
+const MESSAGES_CSV: &str = "./data/scheduled_messages.csv";
+const ATTACHMENT_DIRECTORY: &str = "./data/attachments";
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ScheduledMessage {
@@ -14,14 +19,14 @@ pub struct ScheduledMessage {
 }
 
 fn remove_message_from_file(uuid: &str) {
-    if let Ok(file) = std::fs::File::open(FILE_NAME) {
+    if let Ok(file) = std::fs::File::open(MESSAGES_CSV) {
         let reader = std::io::BufReader::new(file);
         let mut rdr = csv::ReaderBuilder::new().has_headers(false).from_reader(reader);
         let entries: Vec<ScheduledMessage> = rdr.deserialize().filter_map(Result::ok).collect();
 
         let remaining: Vec<_> = entries.into_iter().filter(|entry| entry.uuid != uuid).collect();
 
-        let file = std::fs::File::create(FILE_NAME).expect("Could not recreate file");
+        let file = std::fs::File::create(MESSAGES_CSV).expect("Could not recreate file");
         let writer = std::io::BufWriter::new(file);
         let mut wtr = csv::WriterBuilder::new().has_headers(false).from_writer(writer);
         for msg in remaining {
@@ -29,16 +34,53 @@ fn remove_message_from_file(uuid: &str) {
         }
         let _ = wtr.flush();
     }
+
+    let pattern = format!("{}/{}*", ATTACHMENT_DIRECTORY, uuid);
+    let matched_files: Vec<PathBuf> = glob(&pattern)
+        .expect("Failed to read glob pattern")
+        .filter_map(Result::ok)
+        .collect();
+
+    for file in matched_files {
+        match std::fs::remove_file(&file) {
+            Ok(_) => println!("🗑️ Deleted file: {}", file.display()),
+            Err(e) => eprintln!("❌ Failed to delete file {}: {}", file.display(), e),
+        }
+    }
 }
 
 async fn add_schedule_to_file(
     user: &serenity::User,
     message: &String,
-    time: std::time::Duration
+    time: std::time::Duration,
+    additional_file: Option<Attachment>
 ) -> Result<String, Error> {
-    std::fs::create_dir_all("./data")?;
+    std::fs::create_dir_all(DIRECTORY)?;  // Make sure directory exists.
+    std::fs::create_dir_all(ATTACHMENT_DIRECTORY)?;  // Make sure directory exists.
 
     let id = uuid::Uuid::new_v4().to_string();
+
+    if additional_file.is_some() {
+        let unwrapped_file = additional_file.unwrap();
+        let raw_file_name = &unwrapped_file.filename;
+        let file_name: String;
+
+        if raw_file_name.split('.').collect::<Vec<&str>>().len() > 1 {
+            file_name = format!("{}.{}", id, raw_file_name.split(".").last().unwrap());
+        } else {
+            file_name = format!("{}.{}", id, "txt");
+        }
+
+        let file_path = format!("{}/{}", ATTACHMENT_DIRECTORY, file_name);
+        let file_bytes = unwrapped_file.download().await?;
+
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(file_path)?;
+
+        file.write_all(&file_bytes)?;
+    }
 
     let scheduled = ScheduledMessage {
         uuid: id.clone(),
@@ -52,7 +94,7 @@ async fn add_schedule_to_file(
         .from_writer(std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(FILE_NAME)?);
+            .open(MESSAGES_CSV)?);
 
     wtr.serialize(&scheduled)?;
     wtr.flush()?;
@@ -61,15 +103,15 @@ async fn add_schedule_to_file(
 }
 
 pub async fn reschedule_messages(ctx: serenity::Context) -> Result<(), Error> {
-    let file = match std::fs::File::open(FILE_NAME) {
+    let file = match std::fs::File::open(MESSAGES_CSV) {
         Ok(f) => f,
         Err(_) => {
-            println!("No scheduled messages file found at {}, nothing to reschedule.", FILE_NAME);
+            println!("No scheduled messages file found at {}, nothing to reschedule.", MESSAGES_CSV);
             return Ok(()); // No file? Nothing to reschedule.
         }
     };
 
-    println!("🔃 Reading scheduled messages from {}", FILE_NAME);
+    println!("🔃 Reading scheduled messages from {}", MESSAGES_CSV);
 
     let mut rdr = csv::ReaderBuilder::new()
         .has_headers(false)
@@ -118,7 +160,30 @@ async fn schedule_message(
 ) {
     tokio::time::sleep(time).await;
 
-    let builder = CreateMessage::new().content(message.clone());
+    let pattern = format!("{}/{}*", ATTACHMENT_DIRECTORY, uuid);
+    let potential_file_paths: Vec<PathBuf> = glob(&pattern)
+        .expect("Failed to read glob pattern")
+        .filter_map(Result::ok)
+        .collect();
+
+    for path in &potential_file_paths {
+        println!("Resolved Path: {}", path.display());
+    }
+    
+    let mut builder = CreateMessage::new().content(message.clone());
+
+    if let Some(first_path) = potential_file_paths.first() {
+        println!("Attaching File: {}", first_path.display());
+
+        match CreateAttachment::path(first_path).await {
+            Ok(attachment) => {
+                builder = builder.add_file(attachment);
+            }
+            Err(e) => {
+                eprintln!("❌ Failed to attach file: {}", e);
+            }
+        }
+    }
 
     if let Err(e) = user.direct_message(&ctx, builder).await {
         eprintln!("❌ Failed to send message to {}: {:?}", user.name, e);
@@ -135,6 +200,7 @@ pub async fn schedule_command(
     #[description = "Member to schedule message to."] member: serenity::Member,
     #[description = "Length before message is sent to them. (1s, 1m, 1d, 1w, 1M, 1Y)"] time: String,
     #[description = "The message you want to send."] message: String,
+    #[description = "An additional attachment."] additional_file: Option<Attachment>,
 ) -> Result<(), Error> {
     ctx.defer_ephemeral().await?;
 
@@ -148,7 +214,7 @@ pub async fn schedule_command(
     let time = parsed_duration.unwrap();
     let new_message = format!("**{}**: {}", ctx.author().name, message);
 
-    match add_schedule_to_file(&member.user, &new_message, time).await {
+    match add_schedule_to_file(&member.user, &new_message, time, additional_file).await {
         Ok(uuid) => {
             println!("✅  Message saved with UUID {}", uuid);
             tokio::spawn(schedule_message(
