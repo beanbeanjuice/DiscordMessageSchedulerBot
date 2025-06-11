@@ -214,7 +214,7 @@ pub async fn schedule_command(
     let time = parsed_duration.unwrap();
     let new_message = format!("**{}**: {}", ctx.author().name, message);
 
-    if additional_file.clone().unwrap().size >= 25 * 1000000 {
+    if additional_file.is_some() && additional_file.clone().unwrap().size >= 25 * 1000000 {
         let response: String = format!("Your attachment is too large (25 MB Maximum): {} MB", additional_file.clone().unwrap().size / 1000000);
 
         ctx.reply(response).await?;
